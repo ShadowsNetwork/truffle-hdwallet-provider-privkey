@@ -1,20 +1,70 @@
 const FiltersSubprovider = require('web3-provider-engine/subproviders/filters.js')
 const HookedSubprovider = require('web3-provider-engine/subproviders/hooked-wallet.js')
-const NonceSubProvider = require('web3-provider-engine/subproviders/nonce-tracker.js');
-const Web3 = require('web3')
 const Transaction = require('ethereumjs-tx')
 const ProviderEngine = require('web3-provider-engine')
-const ProviderSubprovider = require("web3-provider-engine/subproviders/provider.js");
-const ethereumjsWallet = require('ethereumjs-wallet')
+const RpcSubprovider = require('web3-provider-engine/subproviders/rpc');
+const EthereumjsWallet = require('ethereumjs-wallet')
 
-function HDWalletProvider (privateKeys, providerUrl) {
+function ChainIdSubProvider(chainId) {
+    this.chainId = chainId;
+ }
+ 
+ ChainIdSubProvider.prototype.setEngine = function (engine) {
+    const self = this;
+    if (self.engine) return;
+    self.engine = engine;
+ };
+ ChainIdSubProvider.prototype.handleRequest = function (payload, next, end) {
+    if (
+       payload.method == 'eth_sendTransaction' &&
+       payload.params.length > 0 &&
+       typeof payload.params[0].chainId == 'undefined'
+    ) {
+       payload.params[0].chainId = this.chainId;
+    }
+    next();
+ };
+ 
+ function NonceSubProvider() { }
+ 
+ NonceSubProvider.prototype.setEngine = function (engine) {
+    const self = this;
+    if (self.engine) return;
+    self.engine = engine;
+ };
+ NonceSubProvider.prototype.handleRequest = function (payload, next, end) {
+    if (payload.method == 'eth_sendTransaction') {
+       this.engine.sendAsync(
+          {
+             jsonrpc: '2.0',
+             id: Math.ceil(Math.random() * 4415011859092441),
+             method: 'eth_getTransactionCount',
+             params: [payload.params[0].from, 'latest'],
+          },
+          (err, result) => {
+             const nonce =
+                typeof result.result == 'string'
+                   ? result.result == '0x'
+                      ? 0
+                      : parseInt(result.result.substring(2), 16)
+                   : 0;
+             payload.params[0].nonce = nonce || 0;
+             next();
+          }
+       );
+    } else {
+       next();
+    }
+ };
+
+function HDWalletProvider (privateKeys, providerUrl, chainId) {
 
   this.wallets = {};
   this.addresses = [];
   
   // from https://github.com/trufflesuite/truffle-hdwallet-provider/pull/25/commits
   for (let key of privateKeys) {
-    var wallet = ethereumjsWallet.fromPrivateKey(new Buffer(key, "hex"));
+    var wallet = EthereumjsWallet.default.fromPrivateKey(new Buffer(key, "hex"));
     var addr = '0x' + wallet.getAddress().toString('hex');
     this.addresses.push(addr);
     this.wallets[addr] = wallet;
@@ -26,6 +76,7 @@ function HDWalletProvider (privateKeys, providerUrl) {
   this.engine = new ProviderEngine()
 
   // from https://github.com/trufflesuite/truffle-hdwallet-provider/pull/66
+  this.engine.addProvider(new ChainIdSubProvider(chainId));
   this.engine.addProvider(new NonceSubProvider())
   this.engine.addProvider(
     new HookedSubprovider({
@@ -54,7 +105,7 @@ function HDWalletProvider (privateKeys, providerUrl) {
     })
   )
   this.engine.addProvider(new FiltersSubprovider());
-  this.engine.addProvider(new ProviderSubprovider(new Web3.providers.HttpProvider(providerUrl)));
+  this.engine.addProvider(new RpcSubprovider({ rpcUrl: providerUrl }));
   this.engine.start(); // Required by the provider engine.
 }
 
